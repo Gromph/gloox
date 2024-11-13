@@ -28,6 +28,7 @@
 
 #if ( !defined( _WIN32 ) && !defined( _WIN32_WCE ) ) || defined( __SYMBIAN32__ )
 # include <arpa/inet.h>
+# include <sys/epoll.h>
 # include <sys/types.h>
 # include <sys/socket.h>
 # include <sys/select.h>
@@ -94,19 +95,30 @@ namespace gloox
     if( m_socket < 0 )
       return true; // let recv() catch the closed fd
 
-    fd_set fds;
-    struct timeval tv;
+    int epoll_fd = epoll_create1(0);
+    if (epoll_fd == -1)
+    {
+      m_logInstance.err( LogAreaClassConnectionTCPBase, "epoll_create1() failed" );
+      return false;
+    }
 
-    FD_ZERO( &fds );
-    // the following causes a C4127 warning in VC++ Express 2008 and possibly other versions.
-    // however, the reason for the warning can't be fixed in gloox.
-    FD_SET( m_socket, &fds );
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = m_socket;
 
-    tv.tv_sec = timeout / 1000000;
-    tv.tv_usec = timeout % 1000000;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, m_socket, &ev) == -1)
+    {
+      m_logInstance.err( LogAreaClassConnectionTCPBase, "epoll_ctl() failed" );
+      close(epoll_fd);
+      return false;
+    }
 
-    return ( ( select( m_socket + 1, &fds, 0, 0, timeout == -1 ? 0 : &tv ) > 0 )
-             && FD_ISSET( m_socket, &fds ) != 0 );
+    struct epoll_event events[1];
+    int nfds = epoll_wait(epoll_fd, events, 1, timeout / 1000); // timeout in milliseconds
+
+    close(epoll_fd);
+
+    return (nfds > 0);
   }
 
   ConnectionError ConnectionTCPBase::receive()
